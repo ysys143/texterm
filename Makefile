@@ -23,7 +23,7 @@ SIGN_KC    = $(HOME)/Library/Keychains/$(SIGN_ID).keychain-db
 SIGN_KCPW  = texterm
 INSTALLDIR = $(HOME)/Applications
 
-.PHONY: all setup build run clean cert install
+.PHONY: all setup build run clean cert install icon
 
 all: build
 
@@ -109,6 +109,10 @@ install: build
 	@cp -R $(BUNDLE) $(INSTALLDIR)/
 	@echo "Installed: $(INSTALLDIR)/$(APP).app"
 	@echo "Grant Full Disk Access once: System Settings > Privacy & Security > Full Disk Access > +"
+
+# Regenerate Resources/AppIcon.icns from assets/icon.png (the 1024px master).
+icon:
+	@sh scripts/make-icon.sh
 
 run: build
 	open $(BUNDLE)
