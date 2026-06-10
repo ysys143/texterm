@@ -185,18 +185,19 @@
     // sigil, prompt, currency), so we err toward NOT rendering — per the user,
     // paths/code don't need to be typeset, but mis-rendering them is wrong.
     function isMathContent(inner) {
+      // Surrounding padding ("$ \theta $") is just formatting; trim it and judge
+      // the real content (KaTeX ignores leading/trailing whitespace anyway).
+      inner = inner.trim();
       if (!inner) return false;
-      // Tight math tokens never have whitespace hugging the delimiters; a padded
-      // span (`$ ... $`) is almost always two unrelated `$` across prose.
-      if (/^\s|\s$/.test(inner)) return false;
-      // A LaTeX backslash command (\sqrt, \frac, \langle, \|, \infty, \theta...)
-      // is an unambiguous math signal: shell/paths/code in a terminal don't put
-      // backslashes inside a $...$ pair. Accept immediately so real math can use
-      // |, <, >, ; freely (norms \|v\|, |x|, inequalities a < b, args p(x;\theta)).
+      // A LaTeX backslash command (\sqrt, \frac, \langle, \|, \infty, \theta,
+      // \mathbb, \!, \,...) is an unambiguous math signal: shell/paths/code in a
+      // terminal don't put backslashes inside a $...$ pair. Accept immediately so
+      // real math can freely use |, <, >, ;, and padding (norms \|v\|, |x|,
+      // inequalities a < b, args p(x;\theta), display `$$ ... $$`).
       if (inner.indexOf('\\') !== -1) return true;
-      // No backslash: be strict, because this is where shell false-positives live.
-      // These chars are pervasive in terminal output (paths "$VAR"/a/b, pipes,
-      // redirects, command substitution, quotes) and never appear in bare math.
+      // No backslash below: be strict, because this is where shell false-positives
+      // live. These chars are pervasive in terminal output (paths "$VAR"/a/b,
+      // pipes, redirects, command substitution, quotes) but never appear in math.
       if (/["'`\/;|&<>]/.test(inner)) return false;
       // Shell assignment token (`name=` as a standalone word, e.g. `FOO=$BAR baz=`).
       // Inline math assigns `=` to an expression (`A=\pi`), never to whitespace/end.
@@ -206,6 +207,11 @@
       if (/\.\./.test(inner)) return false;
       // A bare number is currency ($5) or a positional param ($1), not math.
       if (/^[\d.,]+$/.test(inner)) return false;
+      // Multi-word prose / shell with no math structure ("$HOME and $PATH" ->
+      // "HOME and", "$5 and the $" -> "5 and the"): a space but no math operator
+      // means it isn't math. Tight tokens ("E=mc^2", "n") and operator-bearing
+      // expressions ("E = mc^2", "a + b") still pass.
+      if (/\s/.test(inner) && !/[=^_{}+]/.test(inner)) return false;
       return true;
     }
 
