@@ -41,10 +41,13 @@
          falls over blank rows. */
       overflow: visible;
       pointer-events: none;
-      display: flex;
-      align-items: center;
+      /* Plain inline flow, NOT flex: a flex container drops the leading-whitespace
+         text run, which shoved indented math to column 0. Inline flow + white-space:pre
+         keeps every leading space = exactly one terminal cell, so the math lines up
+         with the surrounding (indented) text. Vertical centering is line-height
+         (set per row in refreshMath) + vertical-align on the math itself. */
     }
-    .math-overlay .katex { font-size: 1.0em; }
+    .math-overlay .katex { font-size: 1.0em; vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -186,8 +189,14 @@
       // Tight math tokens never have whitespace hugging the delimiters; a padded
       // span (`$ ... $`) is almost always two unrelated `$` across prose.
       if (/^\s|\s$/.test(inner)) return false;
+      // A LaTeX backslash command (\sqrt, \frac, \langle, \|, \infty, \theta...)
+      // is an unambiguous math signal: shell/paths/code in a terminal don't put
+      // backslashes inside a $...$ pair. Accept immediately so real math can use
+      // |, <, >, ; freely (norms \|v\|, |x|, inequalities a < b, args p(x;\theta)).
+      if (inner.indexOf('\\') !== -1) return true;
+      // No backslash: be strict, because this is where shell false-positives live.
       // These chars are pervasive in terminal output (paths "$VAR"/a/b, pipes,
-      // redirects, command substitution, quotes) and never appear in inline math.
+      // redirects, command substitution, quotes) and never appear in bare math.
       if (/["'`\/;|&<>]/.test(inner)) return false;
       // Shell assignment token (`name=` as a standalone word, e.g. `FOO=$BAR baz=`).
       // Inline math assigns `=` to an expression (`A=\pi`), never to whitespace/end.
@@ -266,6 +275,9 @@
         // Track the current (zoomable) terminal font so overlay text stays cell-
         // aligned and KaTeX (sized in em) scales with it.
         div.style.fontSize = term.options.fontSize + 'px';
+        // One text line per terminal row, so inline math (vertical-align:middle)
+        // centers within the row instead of sitting on the baseline.
+        div.style.lineHeight = dims.h + 'px';
         // A logical line spanning multiple rows must wrap inside the overlay too.
         if (span > 1) div.style.whiteSpace = 'pre-wrap';
         div.innerHTML = html;
