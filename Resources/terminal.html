@@ -144,15 +144,34 @@
       setFontSize(dir === 0 ? ZOOM_DEFAULT : term.options.fontSize + (dir > 0 ? 1 : -1));
     }
 
-    // xterm owns the keyboard via its hidden textarea, so intercept the zoom
-    // chords here before xterm forwards them to the shell. Returning false stops
-    // that forwarding; preventDefault stops any WebKit default.
+    // ─── Line spacing (cell-height multiplier) ──────────────────────────────
+    // Taller rows give multi-line math (\frac, integrals, matrices) vertical
+    // room so it doesn't crowd the lines above/below. Independent of font size.
+    const LH_MIN = 1.0, LH_MAX = 2.6, LH_STEP = 0.15, LH_DEFAULT = term.options.lineHeight;
+    function setLineHeight(v) {
+      const next = Math.round(Math.max(LH_MIN, Math.min(LH_MAX, v)) * 100) / 100;
+      if (next === term.options.lineHeight) return;
+      term.options.lineHeight = next;
+      doFit();             // taller cells -> fewer rows -> report to the PTY
+      scheduleMathScan();  // re-place math overlays at the new cell height
+    }
+    function zoomLineHeight(dir) {
+      setLineHeight(dir === 0 ? LH_DEFAULT : term.options.lineHeight + dir * LH_STEP);
+    }
+
+    // xterm owns the keyboard via its hidden textarea, so intercept the chords
+    // here before xterm forwards them to the shell. Returning false stops that
+    // forwarding; preventDefault stops any WebKit default.
+    //   Cmd +/-/0        -> font size
+    //   Cmd+Shift +/-/0  -> line spacing
     term.attachCustomKeyEventHandler(ev => {
       if (ev.isComposing || ev.keyCode === 229) return true;  // never touch IME
       if (ev.type !== 'keydown' || !ev.metaKey) return true;
-      if (ev.key === '=' || ev.key === '+') { ev.preventDefault(); zoomFont(1);  return false; }
-      if (ev.key === '-' || ev.key === '_') { ev.preventDefault(); zoomFont(-1); return false; }
-      if (ev.key === '0')                   { ev.preventDefault(); zoomFont(0);  return false; }
+      const adjust = ev.shiftKey ? zoomLineHeight : zoomFont;
+      // With Shift held, '=' arrives as '+', '-' as '_', '0' as ')'.
+      if (ev.key === '=' || ev.key === '+') { ev.preventDefault(); adjust(1);  return false; }
+      if (ev.key === '-' || ev.key === '_') { ev.preventDefault(); adjust(-1); return false; }
+      if (ev.key === '0' || ev.key === ')') { ev.preventDefault(); adjust(0);  return false; }
       return true;
     });
 
