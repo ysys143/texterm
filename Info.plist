@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>texterm</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.texterm.app</string>
+    <key>CFBundleName</key>
+    <string>texterm</string>
+    <key>CFBundleDisplayName</key>
+    <string>texterm</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <!-- Purpose strings for the TCC prompts a terminal triggers when a child
+         process (zsh init, claude, plugins) walks the home dir. A non-sandboxed
+         app MUST declare these or macOS kills it on first access; declaring them
+         also makes the one-time prompt readable instead of generic. -->
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>A program you ran in this terminal accessed your Photos library.</string>
+    <key>NSAppleMusicUsageDescription</key>
+    <string>A program you ran in this terminal accessed your Music/media library.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>A program you ran in this terminal accessed your Desktop folder.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>A program you ran in this terminal accessed your Documents folder.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>A program you ran in this terminal accessed your Downloads folder.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>A program you ran in this terminal accessed a removable volume.</string>
+</dict>
+</plist>

@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>texterm</title>
+  <link rel="stylesheet" href="xterm/xterm.css">
+  <link rel="stylesheet" href="katex/katex.min.css">
+  <script src="xterm/xterm.js"></script>
+  <script src="xterm/addon-fit.js"></script>
+  <script src="katex/katex.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      background: #1e1e2e;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    #term {
+      height: 100vh;
+      width: 100vw;
+      /* top padding clears the transparent macOS titlebar / traffic lights */
+      padding: 30px 10px 8px;
+    }
+
+    /* Each overlay row covers one terminal line that contains math. Its opaque
+       background hides the raw "$...$" source painted on the canvas underneath. */
+    .math-overlay {
+      position: absolute;
+      left: 0;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      font-family: 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+      font-size: 14px;
+      white-space: pre;
+      /* Tall math (\dfrac, integrals, \sqrt) is taller than one terminal row.
+         The opaque background still covers just the source row (hiding the raw
+         "$...$"), but the typeset content is allowed to overflow above/below so
+         it isn't clipped. Math from Claude is on its own line, so the overflow
+         falls over blank rows. */
+      overflow: visible;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+    }
+    .math-overlay .katex { font-size: 1.0em; }
+  </style>
+</head>
+<body>
+  <div id="term"></div>
+
+  <script>
+    'use strict';
+
+    // ─── Terminal core ──────────────────────────────────────────────────────
+    const term = new Terminal({
+      fontFamily: "'SF Mono', 'JetBrains Mono', Menlo, monospace",
+      fontSize: 14,
+      lineHeight: 1.0,
+      cursorBlink: true,
+      allowProposedApi: true,           // required for registerDecoration / buffer API
+      scrollback: 10000,
+      theme: {
+        background:    '#1e1e2e',
+        foreground:    '#cdd6f4',
+        cursor:        '#89b4fa',
+        selectionBackground: '#45475a',
+        black:   '#45475a', red:     '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af',
+        blue:    '#89b4fa', magenta: '#cba6f7', cyan:  '#89dceb', white:  '#bac2de',
+        brightBlack:   '#585b70', brightRed:     '#f38ba8', brightGreen: '#a6e3a1',
+        brightYellow:  '#f9e2af', brightBlue:    '#89b4fa', brightMagenta: '#cba6f7',
+        brightCyan:    '#89dceb', brightWhite:   '#a6e3a1',
+      },
+    });
+
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById('term'));
+    fit.fit();
+    term.focus();
+
+    // ─── Input: xterm.js -> Swift -> PTY ────────────────────────────────────
+    // xterm.js owns the keyboard via its own hidden textarea. For ASCII/special
+    // keys its onData gives correct byte sequences. For IME (CJK) it does NOT
+    // under WebKit: xterm derives composed text by diffing the textarea across
+    // deferred setTimeout(0) reads, and WKWebView's event/value timing makes that
+    // lose all but the first jamo of each Korean syllable. So we handle the IME
+    // ourselves (below) and suppress xterm's unreliable emission while composing.
+    let imeComposing = false;
+    term.onData(data => {
+      if (imeComposing) return;   // composed text is sent from compositionend
+      window.webkit.messageHandlers.pty.postMessage(data);
+    });
+
+    // ─── IME (CJK) composition: send the fully-composed string ourselves ────
+    // compositionend.data is the final composed text ("근", "의", ...). We send
+    // it straight to the PTY and blank the textarea so xterm's own deferred read
+    // yields "" (no duplicate). compositionstart fires before the first input, so
+    // imeComposing is already true when xterm.onData would otherwise leak a jamo.
+    term.textarea.addEventListener('compositionstart', () => { imeComposing = true; });
+    term.textarea.addEventListener('compositionend', (e) => {
+      imeComposing = false;
+      const data = e.data || '';
+      term.textarea.value = '';                 // starve xterm's deferred substring read
+      if (data) window.webkit.messageHandlers.pty.postMessage(data);
+    });
+
+    // ─── Output: Swift (PTY bytes) -> xterm.js ──────────────────────────────
+    // Swift calls writeOutput() with a base64 chunk (base64 avoids any string
+    // re-encoding issues across the JS bridge). We decode to a Uint8Array and
+    // hand raw bytes to xterm.js, which does all VT/cursor/scroll processing.
+    function writeOutput(b64) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      term.write(bytes, scheduleMathScan);
+    }
+
+    // ─── Resize: report new cols/rows back to Swift to set the PTY winsize ──
+    function doFit() {
+      fit.fit();
+      window.webkit.messageHandlers.resize.postMessage({ cols: term.cols, rows: term.rows });
+    }
+    window.addEventListener('resize', doFit);
+    // Report the initial geometry once layout settles
+    setTimeout(doFit, 50);
+
+    // ─── Font zoom: Cmd +/- to resize, Cmd 0 to reset ───────────────────────
+    // Adjust xterm's fontSize then refit, so the PTY learns the new cols/rows
+    // and the shell reflows to match.
+    const ZOOM_MIN = 6, ZOOM_MAX = 40, ZOOM_DEFAULT = term.options.fontSize;
+    function setFontSize(px) {
+      const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, px));
+      if (next === term.options.fontSize) return;
+      term.options.fontSize = next;
+      doFit();             // remeasure cell size, reflow cols/rows, tell the PTY
+      scheduleMathScan();  // re-place math overlays at the new cell metrics
+    }
+    function zoomFont(dir) {
+      setFontSize(dir === 0 ? ZOOM_DEFAULT : term.options.fontSize + (dir > 0 ? 1 : -1));
+    }
+
+    // xterm owns the keyboard via its hidden textarea, so intercept the zoom
+    // chords here before xterm forwards them to the shell. Returning false stops
+    // that forwarding; preventDefault stops any WebKit default.
+    term.attachCustomKeyEventHandler(ev => {
+      if (ev.isComposing || ev.keyCode === 229) return true;  // never touch IME
+      if (ev.type !== 'keydown' || !ev.metaKey) return true;
+      if (ev.key === '=' || ev.key === '+') { ev.preventDefault(); zoomFont(1);  return false; }
+      if (ev.key === '-' || ev.key === '_') { ev.preventDefault(); zoomFont(-1); return false; }
+      if (ev.key === '0')                   { ev.preventDefault(); zoomFont(0);  return false; }
+      return true;
+    });
+
+    // ─── Math rendering via a visible-rows overlay ──────────────────────────
+    // xterm.js paints text to a canvas; markers/decorations can't reliably
+    // anchor to already-scrolled lines. So instead we keep one absolutely
+    // positioned overlay layered over the terminal screen and, on every render
+    // or scroll, re-scan only the VISIBLE rows for $...$ / $$...$$. Each math
+    // line gets an opaque overlay row at row*cellHeight that hides the raw
+    // LaTeX on the canvas beneath and shows KaTeX-typeset output instead.
+
+    const MATH_RE = /(\$\$[^$]+?\$\$|\$[^$\n]+?\$)/g;
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute; top:0; left:0; z-index:10; pointer-events:none;';
+    term.element.querySelector('.xterm-screen').appendChild(overlay);
+
+    // Cell dimensions: prefer xterm's measured values, fall back to DOM-derived.
+    function cellDims() {
+      try {
+        const c = term._core._renderService.dimensions.css.cell;
+        if (c && c.width && c.height) return { w: c.width, h: c.height };
+      } catch (_) {}
+      const rows = term.element.querySelector('.xterm-rows');
+      return { w: rows.offsetWidth / term.cols, h: rows.offsetHeight / term.rows };
+    }
+
+    // Decide whether a $...$ candidate is real math vs. a shell variable, file
+    // path, price, or code fragment. In a terminal `$` is overloaded (shell
+    // sigil, prompt, currency), so we err toward NOT rendering — per the user,
+    // paths/code don't need to be typeset, but mis-rendering them is wrong.
+    function isMathContent(inner) {
+      if (!inner) return false;
+      // Tight math tokens never have whitespace hugging the delimiters; a padded
+      // span (`$ ... $`) is almost always two unrelated `$` across prose.
+      if (/^\s|\s$/.test(inner)) return false;
+      // These chars are pervasive in terminal output (paths "$VAR"/a/b, pipes,
+      // redirects, command substitution, quotes) and never appear in inline math.
+      if (/["'`\/;|&<>]/.test(inner)) return false;
+      // Shell assignment token (`name=` as a standalone word, e.g. `FOO=$BAR baz=`).
+      // Inline math assigns `=` to an expression (`A=\pi`), never to whitespace/end.
+      if (/(^|\s)[A-Za-z_][A-Za-z0-9_]*=(\s|$)/.test(inner)) return false;
+      // Consecutive dots = git revision range ($base..$head) or a relative path,
+      // never inline math (which uses \dots / \ldots, not literal `..`).
+      if (/\.\./.test(inner)) return false;
+      // A bare number is currency ($5) or a positional param ($1), not math.
+      if (/^[\d.,]+$/.test(inner)) return false;
+      return true;
+    }
+
+    // Returns { html, hasMath }. hasMath is false when no candidate survived
+    // isMathContent, so the caller can skip building an overlay entirely.
+    function buildLineHtml(text) {
+      let html = '', last = 0, m, hasMath = false;
+      MATH_RE.lastIndex = 0;
+      while ((m = MATH_RE.exec(text)) !== null) {
+        const raw = m[0];
+        const body = raw.startsWith('$$') ? raw.slice(2, -2) : raw.slice(1, -1);
+        // Not math: leave the raw `$...$` untouched (don't advance `last`); it
+        // gets emitted as plain escaped text by a later slice.
+        if (!isMathContent(body)) continue;
+        html += escapeHtml(text.slice(last, m.index));
+        try {
+          html += katex.renderToString(body, { displayMode: false, throwOnError: false });
+          hasMath = true;
+        } catch (_) {
+          html += escapeHtml(raw);
+        }
+        last = m.index + raw.length;
+      }
+      html += escapeHtml(text.slice(last));
+      return { html, hasMath };
+    }
+
+    let mathTimer = null;
+    function scheduleMathScan() {
+      clearTimeout(mathTimer);
+      mathTimer = setTimeout(refreshMath, 30);
+    }
+
+    function refreshMath() {
+      const buf = term.buffer.active;
+      const dims = cellDims();
+      overlay.innerHTML = '';
+
+      for (let row = 0; row < term.rows; row++) {
+        const line = buf.getLine(buf.viewportY + row);
+        if (!line) continue;
+        // Continuation rows are consumed by their logical-line start below.
+        if (line.isWrapped) continue;
+
+        // Reconstruct the full logical line by joining wrapped continuation rows.
+        let text = line.translateToString(false);
+        let span = 1;
+        while (row + span < term.rows) {
+          const cont = buf.getLine(buf.viewportY + row + span);
+          if (!cont || !cont.isWrapped) break;
+          text += cont.translateToString(false);
+          span++;
+        }
+        text = text.replace(/\s+$/, '');
+
+        if (text.indexOf('$') === -1) continue;
+        const { html, hasMath } = buildLineHtml(text);
+        // No candidate survived the math/shell heuristic -> no overlay, so the
+        // raw terminal text (paths, $VARs, code) shows through unchanged.
+        if (!hasMath) continue;
+
+        const div = document.createElement('div');
+        div.className = 'math-overlay';
+        div.style.top      = (row * dims.h) + 'px';
+        div.style.height   = (span * dims.h) + 'px';
+        div.style.width    = (term.cols * dims.w) + 'px';
+        // Track the current (zoomable) terminal font so overlay text stays cell-
+        // aligned and KaTeX (sized in em) scales with it.
+        div.style.fontSize = term.options.fontSize + 'px';
+        // A logical line spanning multiple rows must wrap inside the overlay too.
+        if (span > 1) div.style.whiteSpace = 'pre-wrap';
+        div.innerHTML = html;
+        overlay.appendChild(div);
+      }
+    }
+
+    // Re-scan whenever the canvas repaints or the user scrolls.
+    term.onRender(scheduleMathScan);
+    term.onScroll(scheduleMathScan);
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+  </script>
+</body>
+</html>
