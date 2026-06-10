@@ -60,7 +60,9 @@
     const term = new Terminal({
       fontFamily: "'SF Mono', 'JetBrains Mono', Menlo, monospace",
       fontSize: 14,
-      lineHeight: 1.0,
+      // Generous default so typeset math (\frac, integrals, matrices) has room
+      // and doesn't crowd neighbouring lines. Adjustable live via Cmd+Shift +/-.
+      lineHeight: 1.8,
       cursorBlink: true,
       allowProposedApi: true,           // required for registerDecoration / buffer API
       scrollback: 10000,
@@ -139,6 +141,7 @@
       term.options.fontSize = next;
       doFit();             // remeasure cell size, reflow cols/rows, tell the PTY
       scheduleMathScan();  // re-place math overlays at the new cell metrics
+      savePrefs();
     }
     function zoomFont(dir) {
       setFontSize(dir === 0 ? ZOOM_DEFAULT : term.options.fontSize + (dir > 0 ? 1 : -1));
@@ -154,10 +157,28 @@
       term.options.lineHeight = next;
       doFit();             // taller cells -> fewer rows -> report to the PTY
       scheduleMathScan();  // re-place math overlays at the new cell height
+      savePrefs();
     }
     function zoomLineHeight(dir) {
       setLineHeight(dir === 0 ? LH_DEFAULT : term.options.lineHeight + dir * LH_STEP);
     }
+
+    // Persist font size + line spacing so adjustments survive relaunches. (Falls
+    // back silently to the defaults above if storage is unavailable.)
+    function savePrefs() {
+      try {
+        localStorage.setItem('texterm.fontSize',  String(term.options.fontSize));
+        localStorage.setItem('texterm.lineHeight', String(term.options.lineHeight));
+      } catch (_) {}
+    }
+    (function restorePrefs() {
+      try {
+        const fs = parseFloat(localStorage.getItem('texterm.fontSize'));
+        const lh = parseFloat(localStorage.getItem('texterm.lineHeight'));
+        if (fs > 0) setFontSize(fs);
+        if (lh > 0) setLineHeight(lh);
+      } catch (_) {}
+    })();
 
     // xterm owns the keyboard via its hidden textarea, so intercept the chords
     // here before xterm forwards them to the shell. Returning false stops that
