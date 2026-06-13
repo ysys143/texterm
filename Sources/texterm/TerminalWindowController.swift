@@ -31,6 +31,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 820))
         root.autoresizingMask = [.width, .height]
+        // Layer-backed + terminal-dark so nothing gray/white shows behind the
+        // (transparent) WebView while a new tab/window's page loads.
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor(red: 0x1e/255.0, green: 0x1e/255.0, blue: 0x2e/255.0, alpha: 1).cgColor
         window.contentView = root
 
         let first = makePane()

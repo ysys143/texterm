@@ -8,6 +8,16 @@ class PTY {
     var onOutput: ((Data) -> Void)?
     var onExit: (() -> Void)?
 
+    // PTY output is coalesced: the reader thread appends every read() chunk to
+    // `pending` and schedules a single main-thread flush per frame (~8ms). A busy
+    // shell can fire dozens of reads per frame; without this each one would cost a
+    // separate main.async + evaluateJavaScript, swamping the main thread on heavy
+    // output (build logs, `cat` big files). Guarded by `pendingLock`.
+    private let pendingLock = NSLock()
+    private var pending = Data()
+    private var flushScheduled = false
+    private static let flushInterval = 0.008
+
     func start(shell: String = "/bin/zsh") throws {
         masterFD = posix_openpt(O_RDWR | O_NOCTTY)
         guard masterFD >= 0 else { throw PTYError.openFailed }
@@ -55,18 +65,42 @@ class PTY {
 
     private func startReading() {
         let fd = masterFD
+        let pid = childPID
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             var buf = [UInt8](repeating: 0, count: 65536)
             while true {
                 let n = read(fd, &buf, buf.count)
                 guard n > 0 else {
-                    DispatchQueue.main.async { self?.onExit?() }
+                    // EOF: the shell has exited. Reap it so it doesn't linger as a
+                    // zombie, flush any buffered tail, then report the exit.
+                    if pid > 0 { waitpid(pid, nil, 0) }
+                    DispatchQueue.main.async { self?.flush(); self?.onExit?() }
                     return
                 }
-                let data = Data(buf[..<n])
-                DispatchQueue.main.async { self?.onOutput?(data) }
+                guard let self = self else { return }
+                self.pendingLock.lock()
+                self.pending.append(contentsOf: buf[..<n])
+                let needSchedule = !self.flushScheduled
+                self.flushScheduled = true
+                self.pendingLock.unlock()
+                if needSchedule {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + PTY.flushInterval) { [weak self] in
+                        self?.flush()
+                    }
+                }
             }
         }
+    }
+
+    // Drains the coalescing buffer and hands one combined chunk to the renderer.
+    // Always runs on the main thread (onOutput calls into WebKit).
+    private func flush() {
+        pendingLock.lock()
+        let data = pending
+        pending.removeAll(keepingCapacity: true)
+        flushScheduled = false
+        pendingLock.unlock()
+        if !data.isEmpty { onOutput?(data) }
     }
 
     func write(_ string: String) {
@@ -103,7 +137,10 @@ class PTY {
     private static func teardown(_ pid: pid_t, _ fd: Int32) {
         guard fd >= 0 else { return }
         DispatchQueue.global(qos: .utility).async {
-            if pid > 0 { kill(pid, SIGHUP) }
+            if pid > 0 {
+                kill(pid, SIGHUP)
+                waitpid(pid, nil, 0)   // reap; no-op (ECHILD) if the reader already did
+            }
             Darwin.close(fd)
         }
     }

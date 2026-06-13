@@ -11,7 +11,9 @@ class TerminalViewController: NSViewController {
     override func loadView() {
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 820))
         v.wantsLayer = true
-        v.layer?.backgroundColor = NSColor.black.cgColor
+        // Match the terminal background (not black) so the pane shows no flash
+        // behind the WebView while terminal.html loads.
+        v.layer?.backgroundColor = NSColor(red: 0x1e/255.0, green: 0x1e/255.0, blue: 0x2e/255.0, alpha: 1).cgColor
         self.view = v
     }
 

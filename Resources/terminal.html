@@ -9,6 +9,9 @@
   <script src="xterm/addon-fit.js"></script>
   <script src="xterm/addon-web-links.js"></script>
   <script src="xterm/addon-image.js"></script>
+  <script src="xterm/addon-webgl.js"></script>
+  <script src="xterm/addon-canvas.js"></script>
+  <script src="xterm/mathdetect.js"></script>
   <script src="katex/katex.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -84,6 +87,25 @@
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(document.getElementById('term'));
+
+    // ─── GPU-accelerated renderer ───────────────────────────────────────────
+    // The default DOM renderer is the slowest; WebGL is the fastest, canvas a
+    // middle ground. Try WebGL first and fall back gracefully (some GPUs/driver
+    // states refuse a context). Both the image addon and the math overlay are
+    // renderer-agnostic — the overlay reads buffer *cells*, not painted pixels —
+    // so switching renderers doesn't affect them.
+    (function loadRenderer() {
+      try {
+        const webgl = new WebglAddon.WebglAddon();
+        // A lost GL context (sleep/wake, GPU reset) would otherwise freeze the
+        // canvas; dispose so xterm falls back to DOM rendering and stays usable.
+        webgl.onContextLoss(() => { try { webgl.dispose(); } catch (_) {} });
+        term.loadAddon(webgl);
+        return;
+      } catch (_) {}
+      try { term.loadAddon(new CanvasAddon.CanvasAddon()); } catch (_) {}
+    })();
+
     fit.fit();
     term.focus();
 
@@ -146,7 +168,14 @@
       fit.fit();
       window.webkit.messageHandlers.resize.postMessage({ cols: term.cols, rows: term.rows });
     }
-    window.addEventListener('resize', doFit);
+    // Debounce: a live window drag fires `resize` continuously; refitting xterm
+    // (remeasure + reflow + PTY winsize ioctl) on every pixel is wasteful and can
+    // make resizing stutter. Coalesce to one fit ~60ms after the drag settles.
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(doFit, 60);
+    });
     // Report the initial geometry once layout settles
     setTimeout(doFit, 50);
 
@@ -223,7 +252,9 @@
     // line gets an opaque overlay row at row*cellHeight that hides the raw
     // LaTeX on the canvas beneath and shows KaTeX-typeset output instead.
 
-    const MATH_RE = /(\$\$[^$]+?\$\$|\$[^$\n]+?\$)/g;
+    // Pattern + isMathContent live in xterm/mathdetect.js (unit-tested under Node).
+    // A fresh /g regex per page so lastIndex state isn't shared across modules.
+    const MATH_RE = new RegExp(MathDetect.MATH_PATTERN, 'g');
 
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:absolute; top:0; left:0; z-index:10; pointer-events:none;';
@@ -239,39 +270,17 @@
       return { w: rows.offsetWidth / term.cols, h: rows.offsetHeight / term.rows };
     }
 
-    // Decide whether a $...$ candidate is real math vs. a shell variable, file
-    // path, price, or code fragment. In a terminal `$` is overloaded (shell
-    // sigil, prompt, currency), so we err toward NOT rendering — per the user,
-    // paths/code don't need to be typeset, but mis-rendering them is wrong.
-    function isMathContent(inner) {
-      // Surrounding padding ("$ \theta $") is just formatting; trim it and judge
-      // the real content (KaTeX ignores leading/trailing whitespace anyway).
-      inner = inner.trim();
-      if (!inner) return false;
-      // A LaTeX backslash command (\sqrt, \frac, \langle, \|, \infty, \theta,
-      // \mathbb, \!, \,...) is an unambiguous math signal: shell/paths/code in a
-      // terminal don't put backslashes inside a $...$ pair. Accept immediately so
-      // real math can freely use |, <, >, ;, and padding (norms \|v\|, |x|,
-      // inequalities a < b, args p(x;\theta), display `$$ ... $$`).
-      if (inner.indexOf('\\') !== -1) return true;
-      // No backslash below: be strict, because this is where shell false-positives
-      // live. These chars are pervasive in terminal output (paths "$VAR"/a/b,
-      // pipes, redirects, command substitution, quotes) but never appear in math.
-      if (/["'`\/;|&<>]/.test(inner)) return false;
-      // Shell assignment token (`name=` as a standalone word, e.g. `FOO=$BAR baz=`).
-      // Inline math assigns `=` to an expression (`A=\pi`), never to whitespace/end.
-      if (/(^|\s)[A-Za-z_][A-Za-z0-9_]*=(\s|$)/.test(inner)) return false;
-      // Consecutive dots = git revision range ($base..$head) or a relative path,
-      // never inline math (which uses \dots / \ldots, not literal `..`).
-      if (/\.\./.test(inner)) return false;
-      // A bare number is currency ($5) or a positional param ($1), not math.
-      if (/^[\d.,]+$/.test(inner)) return false;
-      // Multi-word prose / shell with no math structure ("$HOME and $PATH" ->
-      // "HOME and", "$5 and the $" -> "5 and the"): a space but no math operator
-      // means it isn't math. Tight tokens ("E=mc^2", "n") and operator-bearing
-      // expressions ("E = mc^2", "a + b") still pass.
-      if (/\s/.test(inner) && !/[=^_{}+]/.test(inner)) return false;
-      return true;
+    // KaTeX render cache: refreshMath re-renders every visible formula on each
+    // scroll/repaint, but a formula string always typesets to the same HTML.
+    // Memoize so the cost is paid once per distinct formula, not once per scan.
+    const katexCache = new Map();
+    function renderMath(body) {
+      let html = katexCache.get(body);
+      if (html === undefined) {
+        html = katex.renderToString(body, { displayMode: false, throwOnError: false });
+        katexCache.set(body, html);
+      }
+      return html;
     }
 
     // Returns { html, hasMath }. hasMath is false when no candidate survived
@@ -287,7 +296,7 @@
         if (!isMathContent(body)) continue;
         html += escapeHtml(text.slice(last, m.index));
         try {
-          html += katex.renderToString(body, { displayMode: false, throwOnError: false });
+          html += renderMath(body);
           hasMath = true;
         } catch (_) {
           html += escapeHtml(raw);
@@ -304,10 +313,13 @@
       mathTimer = setTimeout(refreshMath, 30);
     }
 
+    let lastOverlaySig = '';
     function refreshMath() {
       const buf = term.buffer.active;
       const dims = cellDims();
-      overlay.innerHTML = '';
+      const fontSize = term.options.fontSize;
+      const width = term.cols * dims.w;
+      const specs = [];
 
       for (let row = 0; row < term.rows; row++) {
         const line = buf.getLine(buf.viewportY + row);
@@ -332,20 +344,35 @@
         // raw terminal text (paths, $VARs, code) shows through unchanged.
         if (!hasMath) continue;
 
+        specs.push({
+          top: row * dims.h,                 // px from the top of the screen
+          height: span * dims.h,
+          width: width,
+          fontSize: fontSize,                // track the zoomable font so KaTeX (em) scales
+          lineHeight: dims.h,                // 1 text line per row -> vertical-align centers math
+          wrap: span > 1,                    // a multi-row logical line must wrap in the overlay
+          html: html
+        });
+      }
+
+      // onRender fires repeatedly (cursor blink, identical repaints); rebuilding
+      // the overlay DOM each time is wasted work. Skip when the visible math set
+      // and its geometry are byte-for-byte unchanged.
+      const sig = JSON.stringify(specs);
+      if (sig === lastOverlaySig) return;
+      lastOverlaySig = sig;
+
+      overlay.innerHTML = '';
+      for (const s of specs) {
         const div = document.createElement('div');
         div.className = 'math-overlay';
-        div.style.top      = (row * dims.h) + 'px';
-        div.style.height   = (span * dims.h) + 'px';
-        div.style.width    = (term.cols * dims.w) + 'px';
-        // Track the current (zoomable) terminal font so overlay text stays cell-
-        // aligned and KaTeX (sized in em) scales with it.
-        div.style.fontSize = term.options.fontSize + 'px';
-        // One text line per terminal row, so inline math (vertical-align:middle)
-        // centers within the row instead of sitting on the baseline.
-        div.style.lineHeight = dims.h + 'px';
-        // A logical line spanning multiple rows must wrap inside the overlay too.
-        if (span > 1) div.style.whiteSpace = 'pre-wrap';
-        div.innerHTML = html;
+        div.style.top      = s.top + 'px';
+        div.style.height   = s.height + 'px';
+        div.style.width    = s.width + 'px';
+        div.style.fontSize = s.fontSize + 'px';
+        div.style.lineHeight = s.lineHeight + 'px';
+        if (s.wrap) div.style.whiteSpace = 'pre-wrap';
+        div.innerHTML = s.html;
         overlay.appendChild(div);
       }
     }

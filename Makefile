@@ -23,9 +23,13 @@ SIGN_KC    = $(HOME)/Library/Keychains/$(SIGN_ID).keychain-db
 SIGN_KCPW  = texterm
 INSTALLDIR = $(HOME)/Applications
 
-.PHONY: all setup build run clean cert install icon
+.PHONY: all setup build run clean cert install icon test dmg
 
 all: build
+
+# Unit tests (pure JS, no deps): the math-vs-shell detector.
+test:
+	@node tests/mathdetect.test.js
 
 # Download KaTeX (fonts included) into Resources/katex/
 setup:
@@ -33,13 +37,15 @@ setup:
 	@echo "Downloading KaTeX + xterm.js..."
 	@mkdir -p Resources/katex Resources/xterm
 	@TMP=$$(mktemp -d) && \
-	  npm install --prefix $$TMP katex @xterm/xterm @xterm/addon-fit @xterm/addon-web-links @xterm/addon-image --silent && \
+	  npm install --prefix $$TMP katex @xterm/xterm @xterm/addon-fit @xterm/addon-web-links @xterm/addon-image @xterm/addon-webgl @xterm/addon-canvas --silent && \
 	  cp -r $$TMP/node_modules/katex/dist/. Resources/katex/ && \
 	  cp $$TMP/node_modules/@xterm/xterm/lib/xterm.js Resources/xterm/ && \
 	  cp $$TMP/node_modules/@xterm/xterm/css/xterm.css Resources/xterm/ && \
 	  cp $$TMP/node_modules/@xterm/addon-fit/lib/addon-fit.js Resources/xterm/ && \
 	  cp $$TMP/node_modules/@xterm/addon-web-links/lib/addon-web-links.js Resources/xterm/ && \
 	  cp $$TMP/node_modules/@xterm/addon-image/lib/addon-image.js Resources/xterm/ && \
+	  cp $$TMP/node_modules/@xterm/addon-webgl/lib/addon-webgl.js Resources/xterm/ && \
+	  cp $$TMP/node_modules/@xterm/addon-canvas/lib/addon-canvas.js Resources/xterm/ && \
 	  rm -rf $$TMP && echo "KaTeX + xterm.js installed."
 
 # Compile the C shim that wraps fork() + exec()
@@ -118,6 +124,19 @@ icon:
 
 run: build
 	open $(BUNDLE)
+
+# Package the (signed) app bundle into a distributable .dmg with an /Applications
+# drag-target. Output: .build/texterm-<version>.dmg (version read from Info.plist).
+dmg: build
+	@VER=$$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Info.plist 2>/dev/null || echo 0.0.0); \
+	  STAGE=$$(mktemp -d); \
+	  cp -R $(BUNDLE) $$STAGE/; \
+	  ln -s /Applications $$STAGE/Applications; \
+	  OUT=$(BUILD)/$(APP)-$$VER.dmg; \
+	  rm -f $$OUT; \
+	  hdiutil create -volname "$(APP) $$VER" -srcfolder $$STAGE -ov -format UDZO "$$OUT" >/dev/null; \
+	  rm -rf $$STAGE; \
+	  echo "Packaged: $$OUT"
 
 clean:
 	rm -rf $(BUILD)

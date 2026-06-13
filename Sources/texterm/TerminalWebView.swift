@@ -30,6 +30,13 @@ class TerminalWebView: WKWebView, WKNavigationDelegate, WKScriptMessageHandler {
 
         navigationDelegate = self
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        // A fresh WKWebView paints an opaque white (briefly gray) backdrop before
+        // the page's first paint, which flashes when a new tab/window opens. Make
+        // the WebView itself non-drawing so it's fully transparent during load and
+        // the dark pane layer behind it shows through the whole time -- no flash.
+        // (underPageBackgroundColor only covers the overscroll area, not this.)
+        setValue(false, forKey: "drawsBackground")
+        underPageBackgroundColor = NSColor(red: 0x1e/255.0, green: 0x1e/255.0, blue: 0x2e/255.0, alpha: 1)
         loadTerminal()
     }
 
@@ -55,6 +62,15 @@ class TerminalWebView: WKWebView, WKNavigationDelegate, WKScriptMessageHandler {
         window?.makeFirstResponder(self)
     }
 
+    // If WebKit's web-content process dies (OOM, a renderer crash), the WebView
+    // goes permanently blank. Reload terminal.html so the terminal comes back. The
+    // PTY (and shell) live in Swift and keep running, so input/output reconnect to
+    // the fresh page automatically -- only the on-screen scrollback is lost.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        NSLog("texterm: web content process terminated, reloading terminal")
+        loadTerminal()
+    }
+
     // MARK: - Output -> xterm.js
 
     // The userContentController retains its script message handlers strongly, and
@@ -70,8 +86,20 @@ class TerminalWebView: WKWebView, WKNavigationDelegate, WKScriptMessageHandler {
     func writeOutput(_ data: Data) {
         // base64 keeps the byte stream intact across the JS string bridge,
         // avoiding any UTF-8/UTF-16 reinterpretation of control bytes.
+        //
+        // Pass the (large) payload as an *argument* rather than interpolating it
+        // into the script source: evaluateJavaScript("writeOutput('<~85KB>')") makes
+        // WebKit parse+compile a fresh multi-KB string literal on every chunk.
+        // callAsyncJavaScript compiles the tiny body "writeOutput(b64)" once and
+        // binds b64 as a value, so heavy output stops thrashing the JS compiler.
         let b64 = data.base64EncodedString()
-        evaluateJavaScript("writeOutput('\(b64)')", completionHandler: nil)
+        callAsyncJavaScript(
+            "writeOutput(b64)",
+            arguments: ["b64": b64],
+            in: nil,
+            in: .page,
+            completionHandler: nil
+        )
     }
 
     // MARK: - Messages from JS
