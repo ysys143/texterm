@@ -24,20 +24,30 @@ class PTY {
 
         // strdup copies into C-heap; freed in parent after pty_spawn returns.
         var envCStrs: [UnsafeMutablePointer<CChar>?] = envStrings.map { strdup($0) } + [nil]
-        let shellDup = strdup(shell)
-        var argv: [UnsafeMutablePointer<CChar>?] = [shellDup, nil]
+        // Exec path is the real shell binary; argv[0] is "-zsh" (leading '-') so the
+        // shell runs as a LOGIN shell and sources ~/.zprofile -- where Homebrew's
+        // PATH (/opt/homebrew/bin, holding ffmpeg/node/etc.) is set. A non-login
+        // shell skips .zprofile and those tools go missing. Matches Terminal.app.
+        let shellPath = strdup(shell)
+        let argv0 = strdup("-" + (shell as NSString).lastPathComponent)
+        var argv: [UnsafeMutablePointer<CChar>?] = [argv0, nil]
+
+        // Launched from Finder the app's cwd is "/", which the child would inherit;
+        // start the shell in the home directory instead.
+        FileManager.default.changeCurrentDirectoryPath(NSHomeDirectory())
 
         // pty_spawn() is a C function (pty_spawn.c) that calls fork() and exec().
         // Swift can't call fork() directly because the Swift runtime starts GCD
         // threads that make fork()-without-exec unsafe.
         childPID = argv.withUnsafeMutableBufferPointer { argBuf in
             envCStrs.withUnsafeMutableBufferPointer { envBuf in
-                pty_spawn(slavePath, shellDup, argBuf.baseAddress, envBuf.baseAddress, 40, 220)
+                pty_spawn(slavePath, shellPath, argBuf.baseAddress, envBuf.baseAddress, 40, 220)
             }
         }
 
         envCStrs.compactMap({ $0 }).forEach { free($0) }
-        free(shellDup)
+        free(shellPath)
+        free(argv0)
 
         guard childPID > 0 else { throw PTYError.forkFailed }
         startReading()
