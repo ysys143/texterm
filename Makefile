@@ -33,11 +33,12 @@ setup:
 	@echo "Downloading KaTeX + xterm.js..."
 	@mkdir -p Resources/katex Resources/xterm
 	@TMP=$$(mktemp -d) && \
-	  npm install --prefix $$TMP katex @xterm/xterm @xterm/addon-fit --silent && \
+	  npm install --prefix $$TMP katex @xterm/xterm @xterm/addon-fit @xterm/addon-web-links --silent && \
 	  cp -r $$TMP/node_modules/katex/dist/. Resources/katex/ && \
 	  cp $$TMP/node_modules/@xterm/xterm/lib/xterm.js Resources/xterm/ && \
 	  cp $$TMP/node_modules/@xterm/xterm/css/xterm.css Resources/xterm/ && \
 	  cp $$TMP/node_modules/@xterm/addon-fit/lib/addon-fit.js Resources/xterm/ && \
+	  cp $$TMP/node_modules/@xterm/addon-web-links/lib/addon-web-links.js Resources/xterm/ && \
 	  rm -rf $$TMP && echo "KaTeX + xterm.js installed."
 
 # Compile the C shim that wraps fork() + exec()

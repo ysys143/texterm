@@ -1,3 +1,4 @@
+import AppKit
 import WebKit
 
 // Hosts xterm.js. xterm.js is a complete VT terminal emulator (the same core
@@ -17,12 +18,15 @@ class TerminalWebView: WKWebView, WKNavigationDelegate, WKScriptMessageHandler {
         // Placeholders replaced with self after super.init (can't pass self yet).
         ucc.add(_Noop(), name: "pty")
         ucc.add(_Noop(), name: "resize")
+        ucc.add(_Noop(), name: "openURL")
         super.init(frame: frame, configuration: config)
 
         ucc.removeScriptMessageHandler(forName: "pty")
         ucc.removeScriptMessageHandler(forName: "resize")
+        ucc.removeScriptMessageHandler(forName: "openURL")
         ucc.add(self, name: "pty")
         ucc.add(self, name: "resize")
+        ucc.add(self, name: "openURL")
 
         navigationDelegate = self
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
@@ -74,9 +78,21 @@ class TerminalWebView: WKWebView, WKNavigationDelegate, WKScriptMessageHandler {
                let cols = d["cols"] as? Int, let rows = d["rows"] as? Int {
                 onResize?(UInt16(cols), UInt16(rows))
             }
+        case "openURL":
+            if let s = message.body as? String { openURL(s) }
         default:
             break
         }
+    }
+
+    // Open a link clicked in the terminal. Restricted to web/mail schemes so a
+    // program's output can't make texterm invoke arbitrary URL handlers.
+    private func openURL(_ string: String) {
+        guard let url = URL(string: string),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" || scheme == "mailto"
+        else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 

@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="katex/katex.min.css">
   <script src="xterm/xterm.js"></script>
   <script src="xterm/addon-fit.js"></script>
+  <script src="xterm/addon-web-links.js"></script>
   <script src="katex/katex.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -84,6 +85,16 @@
     term.open(document.getElementById('term'));
     fit.fit();
     term.focus();
+
+    // ─── Clickable links ────────────────────────────────────────────────────
+    // WKWebView's window.open can't reach the system browser, so route every link
+    // activation to Swift, which opens it via NSWorkspace. Two sources: the
+    // web-links addon (bare URLs in output) and OSC 8 hyperlinks (linkHandler).
+    function openLink(uri) {
+      try { window.webkit.messageHandlers.openURL.postMessage(uri); } catch (_) {}
+    }
+    term.loadAddon(new WebLinksAddon.WebLinksAddon((event, uri) => openLink(uri)));
+    term.options.linkHandler = { activate: (event, uri) => openLink(uri) };
 
     // ─── Input: xterm.js -> Swift -> PTY ────────────────────────────────────
     // xterm.js owns the keyboard via its own hidden textarea. For ASCII/special
