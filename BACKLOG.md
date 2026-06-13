@@ -5,40 +5,39 @@ against the current code (notes inline). Check items off as they ship.
 
 ## Performance
 
-- [ ] **GPU renderer** (high) — texterm loads no renderer addon, so it uses the
-      default DOM renderer (the slowest). Add `@xterm/addon-canvas` (safe with the
-      image addon) or `@xterm/addon-webgl` (fastest; verify image-addon compat
-      first). Biggest win for heavy output (build logs, `cat` large files, `ls -R`).
-- [ ] **Coalesce PTY output** (high) — `PTY.startReading` does one
-      `DispatchQueue.main.async` + `evaluateJavaScript` per `read()` chunk. Batch
-      reads into ~1 frame (8-16ms) windows to cut eval count and main-thread load.
-- [ ] **callAsyncJavaScript** (medium) — `writeOutput` interpolates the base64 into
-      a script string (`writeOutput('<~85KB>')`) that WebKit recompiles every call.
-      Pass the base64 as an argument via `callAsyncJavaScript` instead.
-- [ ] **Cache KaTeX + diff overlay** (medium) — `buildLineHtml` calls
-      `katex.renderToString` for every formula on every scan, and `refreshMath`
-      rebuilds the whole overlay (`innerHTML=''`). Cache HTML by formula string and
-      update only changed rows.
+- [x] **GPU renderer** (high) — WebGL renderer (`@xterm/addon-webgl`) with graceful
+      fallback to canvas then DOM, loaded in `terminal.html`. The image addon and the
+      math overlay are renderer-agnostic (overlay reads buffer cells, not pixels).
+- [x] **Coalesce PTY output** (high) — `PTY.startReading` now buffers reads and
+      flushes once per ~8ms window on the main thread, instead of one dispatch +
+      `evaluateJavaScript` per `read()` chunk.
+- [x] **callAsyncJavaScript** (medium) — `writeOutput` passes the base64 as an
+      argument via `callAsyncJavaScript`, so WebKit no longer recompiles a multi-KB
+      script-source string per chunk.
+- [x] **Cache KaTeX + diff overlay** (medium) — `renderMath` memoizes
+      `katex.renderToString` by formula; `refreshMath` short-circuits the DOM rebuild
+      when the visible math set + geometry are unchanged.
 
 ## Stability
 
-- [ ] **WebKit crash recovery** — no `webViewWebContentProcessDidTerminate`; if the
-      web content process dies (OOM, etc.) the terminal goes blank permanently.
-      Implement it to reload terminal.html and reconnect the PTY.
-- [ ] **Reap child process** — no `waitpid`/`SIGCHLD`; exited shells linger as
-      zombies. Reap them.
-- [ ] **Minor** — debounce window-resize fit; ignore broken-pipe write errors.
+- [x] **WebKit crash recovery** — `webViewWebContentProcessDidTerminate` reloads
+      terminal.html; the PTY/shell live in Swift and reconnect to the fresh page
+      (only on-screen scrollback is lost).
+- [x] **Reap child process** — `waitpid` on EOF and in teardown, so exited shells
+      don't linger as zombies.
+- [x] **Minor** — window-resize fit is debounced (~60ms); broken-pipe writes are
+      already non-fatal (the `Darwin.write` result is discarded).
 
 ## Tooling / dev (borrow #3 from md-lens)
 
-- [ ] **Tests** — none yet. Start with `isMathContent` (pure function, easy to unit
-      test) — port the Node checks used during development.
-- [ ] **Quality-gate hook** — PostToolUse hook that builds + lints edited Swift/JS
-      (cf. md-lens `.claude/hooks/go-quality.sh`).
-- [ ] **Project CLAUDE.md** — record invariants: math-overlay model, IME via
-      `compositionend`, stable signing, login shell, and the stale-WKWebView gotcha
-      (a running WKWebView keeps the terminal.html it loaded at launch).
-- [ ] **/release skill** — codesign + package `.dmg`, version bump, GitHub release.
+- [x] **Tests** — `tests/mathdetect.test.js` covers `isMathContent` (extracted to
+      `Resources/xterm/mathdetect.js`). Run with `make test`.
+- [x] **Quality-gate hook** — `.claude/hooks/quality-check.sh` (PostToolUse) builds
+      on Swift/C edits and runs the tests on math-detector edits. Advisory only.
+- [x] **Project CLAUDE.md** — invariants recorded (math-overlay model, IME,
+      stable signing, login shell, off-main-thread PTY close, stale-WKWebView).
+- [~] **/release** — `make dmg` packages a signed `.dmg` (version from Info.plist).
+      Remaining: automated version bump + `gh release` upload.
 
 ## Ideas / known limits
 
