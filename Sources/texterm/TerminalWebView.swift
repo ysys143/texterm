@@ -57,6 +57,16 @@ class TerminalWebView: WKWebView, WKNavigationDelegate, WKScriptMessageHandler {
 
     // MARK: - Output -> xterm.js
 
+    // The userContentController retains its script message handlers strongly, and
+    // this view owns that controller -> a retain cycle that keeps the WebView (and
+    // its window) alive forever, so closing a window hangs instead of deallocating.
+    // Call this before releasing the view to break the cycle and stop the process.
+    func teardown() {
+        configuration.userContentController.removeAllScriptMessageHandlers()
+        navigationDelegate = nil
+        stopLoading()
+    }
+
     func writeOutput(_ data: Data) {
         // base64 keeps the byte stream intact across the JS string bridge,
         // avoiding any UTF-8/UTF-16 reinterpretation of control bytes.

@@ -88,9 +88,24 @@ class PTY {
         ioctl(masterFD, UInt(TIOCSWINSZ), &ws)
     }
 
-    deinit {
-        if childPID > 0 { kill(childPID, SIGTERM) }
-        if masterFD >= 0 { Darwin.close(masterFD) }
+    /// Kill the shell and close the master fd. Safe to call from the main thread:
+    /// closing a PTY master blocks in the kernel while the read thread is still in
+    /// read(), so the close is done on a background queue (otherwise window/pane
+    /// close hangs). SIGHUP makes read() return EOF so the read thread exits.
+    func stop() {
+        PTY.teardown(childPID, masterFD)
+        childPID = -1
+        masterFD = -1
+    }
+
+    deinit { PTY.teardown(childPID, masterFD) }
+
+    private static func teardown(_ pid: pid_t, _ fd: Int32) {
+        guard fd >= 0 else { return }
+        DispatchQueue.global(qos: .utility).async {
+            if pid > 0 { kill(pid, SIGHUP) }
+            Darwin.close(fd)
+        }
     }
 }
 
